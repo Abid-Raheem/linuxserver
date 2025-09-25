@@ -1,82 +1,62 @@
-name: RDP (Linux)
+name: SSH via Tailscale
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  secure-ssh:
     runs-on: ubuntu-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Update & Install RDP + Desktop
+      - name: Update & Install Dependencies
         run: |
           sudo apt-get update
-          # Install XFCE desktop & xrdp
-          sudo apt-get install -y xfce4 xfce4-goodies xrdp netcat
+          sudo apt-get install -y openssh-server curl
 
-          # Create RDP user with random password
-          username="rdpuser"
-          password=$(tr -dc 'A-Za-z0-9!@#$%^&*()_+=' </dev/urandom | head -c 16)
-          sudo useradd -m -s /bin/bash $username
-          echo "$username:$password" | sudo chpasswd
+      - name: Configure SSH
+        run: |
+          # Enable and configure SSH
+          sudo systemctl enable ssh
+          sudo systemctl start ssh
 
-          # Save creds into GitHub env
-          echo "RDP_USER=$username" >> $GITHUB_ENV
-          echo "RDP_PASS=$password" >> $GITHUB_ENV
+          # Create SSH user with random secure password
+          USERNAME="sshuser"
+          PASSWORD=$(tr -dc 'A-Za-z0-9!@#$%&*' </dev/urandom | head -c 20)
+          echo "$USERNAME:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo $USERNAME
 
-          # Configure xRDP to use XFCE
-          echo "xfce4-session" > ~/.xsession
-          sudo systemctl enable xrdp
-          sudo systemctl restart xrdp
+          echo "SSH_CREDS=User: $USERNAME | Password: $PASSWORD" >> $GITHUB_ENV
+
+          # Allow password authentication
+          sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+          sudo systemctl restart ssh
 
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$GITHUB_RUN_ID
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-${GITHUB_RUN_ID}
 
-          # Wait for Tailscale to assign an IP
-          retries=0
-          tsIP=""
-          while [ -z "$tsIP" ] && [ $retries -lt 10 ]; do
-            tsIP=$(tailscale ip -4 | head -n1 || true)
-            sleep 5
-            retries=$((retries+1))
-          done
+      - name: Fetch Tailscale IP
+        run: |
+          TS_IP=$(tailscale ip -4 | head -n1)
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
-          if [ -z "$tsIP" ]; then
-            echo "Tailscale IP not assigned. Exiting."
-            exit 1
-          fi
-          echo "TAILSCALE_IP=$tsIP" >> $GITHUB_ENV
-
-      - name: Verify RDP Accessibility
+      - name: Verify SSH Accessibility
         run: |
           echo "Tailscale IP: $TAILSCALE_IP"
-          nc -zv $TAILSCALE_IP 3389 || (echo "RDP not accessible" && exit 1)
-          echo "RDP is accessible!"
-
-      - name: Save Credentials to File
-        run: |
-          cat <<EOF > rdp.txt
-          === RDP ACCESS ===
-          Address: $TAILSCALE_IP
-          Username: $RDP_USER
-          Password: $RDP_PASS
-          ==================
-          EOF
-
-      - name: Upload RDP Credentials Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: rdp-credentials
-          path: rdp.txt
+          nc -zv $TAILSCALE_IP 22
 
       - name: Maintain Connection
         run: |
-          cat rdp.txt
-          echo ""
+          echo -e "\n=== SSH ACCESS ==="
+          echo "Address: $TAILSCALE_IP"
+          echo "Username: sshuser"
+          echo "Password: $(echo $SSH_CREDS)"
+          echo "==================\n"
+
           while true; do
-            echo "[$(date)] RDP Active - Cancel workflow to terminate"
+            echo "[$(date)] SSH Active - Use Ctrl+C in workflow to terminate"
             sleep 300
           done
