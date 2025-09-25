@@ -1,0 +1,70 @@
+name: RDP (Linux)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Update & Install RDP + Desktop
+        run: |
+          sudo apt-get update
+          # Install XFCE desktop & xrdp
+          sudo apt-get install -y xfce4 xfce4-goodies xrdp
+
+          # Create RDP user with random password
+          username="rdpuser"
+          password=$(tr -dc 'A-Za-z0-9!@#$%^&*()_+=' </dev/urandom | head -c 16)
+          sudo useradd -m -s /bin/bash $username
+          echo "$username:$password" | sudo chpasswd
+          echo "RDP_CREDS=User: $username | Password: $password" >> $GITHUB_ENV
+
+          # Configure xRDP to use XFCE
+          echo "xfce4-session" > ~/.xsession
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$GITHUB_RUN_ID
+
+          # Wait for Tailscale to assign an IP
+          retries=0
+          tsIP=""
+          while [ -z "$tsIP" ] && [ $retries -lt 10 ]; do
+            tsIP=$(tailscale ip -4 | head -n1 || true)
+            sleep 5
+            retries=$((retries+1))
+          done
+
+          if [ -z "$tsIP" ]; then
+            echo "Tailscale IP not assigned. Exiting."
+            exit 1
+          fi
+          echo "TAILSCALE_IP=$tsIP" >> $GITHUB_ENV
+
+      - name: Verify RDP Accessibility
+        run: |
+          echo "Tailscale IP: $TAILSCALE_IP"
+          nc -zv $TAILSCALE_IP 3389 || (echo "RDP not accessible" && exit 1)
+          echo "RDP is accessible!"
+
+      - name: Maintain Connection
+        run: |
+          echo ""
+          echo "=== RDP ACCESS ==="
+          echo "Address: $TAILSCALE_IP"
+          echo "Username: $(echo $RDP_CREDS | cut -d' ' -f2)"
+          echo "Password: $(echo $RDP_CREDS | cut -d' ' -f4)"
+          echo "=================="
+          echo ""
+
+          # Keep alive
+          while true; do
+            echo "[$(date)] RDP Active - Cancel workflow to terminate"
+            sleep 300
+          done
