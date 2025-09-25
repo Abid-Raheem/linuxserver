@@ -13,14 +13,17 @@ jobs:
         run: |
           sudo apt-get update
           # Install XFCE desktop & xrdp
-          sudo apt-get install -y xfce4 xfce4-goodies xrdp
+          sudo apt-get install -y xfce4 xfce4-goodies xrdp netcat
 
           # Create RDP user with random password
           username="rdpuser"
           password=$(tr -dc 'A-Za-z0-9!@#$%^&*()_+=' </dev/urandom | head -c 16)
           sudo useradd -m -s /bin/bash $username
           echo "$username:$password" | sudo chpasswd
-          echo "RDP_CREDS=User: $username | Password: $password" >> $GITHUB_ENV
+
+          # Save creds into GitHub env
+          echo "RDP_USER=$username" >> $GITHUB_ENV
+          echo "RDP_PASS=$password" >> $GITHUB_ENV
 
           # Configure xRDP to use XFCE
           echo "xfce4-session" > ~/.xsession
@@ -53,17 +56,26 @@ jobs:
           nc -zv $TAILSCALE_IP 3389 || (echo "RDP not accessible" && exit 1)
           echo "RDP is accessible!"
 
+      - name: Save Credentials to File
+        run: |
+          cat <<EOF > rdp.txt
+          === RDP ACCESS ===
+          Address: $TAILSCALE_IP
+          Username: $RDP_USER
+          Password: $RDP_PASS
+          ==================
+          EOF
+
+      - name: Upload RDP Credentials Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdp-credentials
+          path: rdp.txt
+
       - name: Maintain Connection
         run: |
+          cat rdp.txt
           echo ""
-          echo "=== RDP ACCESS ==="
-          echo "Address: $TAILSCALE_IP"
-          echo "Username: $(echo $RDP_CREDS | cut -d' ' -f2)"
-          echo "Password: $(echo $RDP_CREDS | cut -d' ' -f4)"
-          echo "=================="
-          echo ""
-
-          # Keep alive
           while true; do
             echo "[$(date)] RDP Active - Cancel workflow to terminate"
             sleep 300
